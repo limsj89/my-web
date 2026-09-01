@@ -28,7 +28,7 @@ export default function Home() {
           rows={4}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
-          placeholder="예) 반가워! 소개해 줄래?"
+          placeholder="예) 자신을 소개해 주세요"
           className="w-full resize-y rounded-lg border border-neutral-300 bg-background p-3 text-base text-foreground placeholder:text-neutral-400 focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:focus:border-neutral-100"
         />
 
