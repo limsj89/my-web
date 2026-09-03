@@ -9,9 +9,19 @@ export default function Home() {
   // 질문하기 버튼을 눌렀을 때 보여줄 답변
   const [answer, setAnswer] = useState("")
 
+  // 지금까지 질문한 목록. 최신 질문이 맨 위에 온다.
+  const [history, setHistory] = useState<string[]>([])
+
   // 아직 API는 연결하지 않았다. 입력한 질문을 그대로 답변으로 표시한다.
   function handleAskClick() {
-    setAnswer(question)
+    const asked = question.trim()
+    setAnswer(asked)
+    setHistory([asked, ...history])
+  }
+
+  // x 버튼을 누르면 해당 질문만 목록에서 지운다.
+  function handleDeleteClick(index: number) {
+    setHistory(history.filter((_, i) => i !== index))
   }
 
   return (
@@ -52,6 +62,43 @@ export default function Home() {
             <p className="whitespace-pre-wrap text-base">{answer}</p>
           )}
         </div>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium">지난 질문</h2>
+
+        {history.length === 0 ? (
+          <p className="text-base text-neutral-400">지난 질문이 없습니다.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {history.map((pastQuestion, index) => (
+              <li
+                key={index}
+                className="flex items-center gap-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700"
+              >
+                {/* 질문을 누르면 그 질문이 답변 영역에 다시 표시된다 */}
+                <button
+                  type="button"
+                  onClick={() => setAnswer(pastQuestion)}
+                  title={pastQuestion}
+                  className="flex-1 min-w-0 truncate text-left text-base hover:underline"
+                >
+                  {pastQuestion}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleDeleteClick(index)}
+                  title="이 질문 삭제"
+                  aria-label="이 질문 삭제"
+                  className="shrink-0 rounded-md px-2.5 py-1 text-base font-medium text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                >
+                  x
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </main>
   )
