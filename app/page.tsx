@@ -26,7 +26,7 @@ export default function Home() {
 
   return (
     <main className="flex-1 w-full max-w-2xl mx-auto px-4 py-12 flex flex-col gap-8">
-      <h1 className="text-2xl font-bold">질문하기</h1>
+      <h1 className="text-2xl font-bold">나의 첫 웹서비스</h1>
 
       <section className="flex flex-col gap-3">
         <label htmlFor="question" className="text-sm font-medium">
