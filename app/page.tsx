@@ -17,6 +17,9 @@ type SavedQuestion = {
 // 목록 불러오기에 실패했을 때 보여줄 기본 메시지
 const LIST_LOAD_ERROR = "질문 목록을 불러오지 못했습니다."
 
+// 로그아웃 상태에서 목록 영역에 보여줄 안내 문구
+const LOGIN_REQUIRED = "저장한 질문을 보려면 로그인해 주세요."
+
 // 서버와 hydration 첫 렌더링은 false, hydration 이후 브라우저에서는 true.
 // 구독할 외부 데이터는 없으며 브라우저 저장소나 세션을 읽지 않는다.
 const subscribeToMount = () => () => {}
@@ -24,9 +27,13 @@ const getMountedSnapshot = () => true
 const getServerMountedSnapshot = () => false
 
 // 서버(/api/questions)에서 저장된 질문 목록을 받아온다.
+// 서버는 Bearer 토큰으로 호출자를 확인하므로 로그인 사용자의 access_token을 함께 보낸다.
 // 상태를 건드리지 않는 순수한 네트워크 함수이며, 실패하면 예외를 던진다.
-async function fetchSavedQuestions(): Promise<SavedQuestion[]> {
-  const response = await fetch("/api/questions", { cache: "no-store" })
+async function fetchSavedQuestions(accessToken: string): Promise<SavedQuestion[]> {
+  const response = await fetch("/api/questions", {
+    cache: "no-store",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
 
   // 응답이 JSON이 아닐 수도 있어서 안전하게 해석한다.
   const result = (await response.json().catch(() => null)) as {
@@ -98,7 +105,18 @@ export default function Home() {
   // useEffect 의존성 배열에 넣어도 무한 반복이 생기지 않는다.
   const refreshQuestions = useCallback(async () => {
     try {
-      const items = await fetchSavedQuestions()
+      // 서버가 호출자를 확인할 수 있도록 현재 세션의 토큰부터 가져온다.
+      const { data, error } = await getSupabaseBrowserClient().auth.getSession()
+      const accessToken = error ? null : data.session?.access_token
+
+      // 로그아웃 상태에서는 요청해도 401만 나오므로 목록 요청 없이 안내만 보여준다.
+      if (!accessToken) {
+        setSavedQuestions(null)
+        setListError(LOGIN_REQUIRED)
+        return
+      }
+
+      const items = await fetchSavedQuestions(accessToken)
       setSavedQuestions(items)
       setListError(null)
 
@@ -119,6 +137,26 @@ export default function Home() {
     void loadOnMount()
   }, [refreshQuestions])
 
+  // 로그인/로그아웃이 일어나면 목록을 그 사용자의 것으로 갈아끼운다.
+  // 첫 화면 로드는 위의 마운트 useEffect가 담당하므로 INITIAL_SESSION은 건너뛴다.
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = getSupabaseBrowserClient().auth.onAuthStateChange((event, session) => {
+      if (event === "INITIAL_SESSION") return
+
+      if (session?.access_token) {
+        void refreshQuestions()
+      } else {
+        // 로그아웃: 방금 전 사용자의 목록을 화면에 남겨두지 않는다.
+        setSavedQuestions(null)
+        setListError(LOGIN_REQUIRED)
+      }
+    })
+
+    return () => subscription.unsubscribe()
+  }, [refreshQuestions])
+
   // "다시 시도" 버튼. 오류 문구를 지우고 다시 불러온다.
   function handleRetryClick() {
     setListError(null)
@@ -134,9 +172,15 @@ export default function Home() {
     setDeleteError(null)
 
     try {
+      // 서버가 호출자를 확인할 수 있도록 현재 세션의 토큰을 함께 보낸다.
+      const { data, error } = await getSupabaseBrowserClient().auth.getSession()
+      const accessToken = error ? null : data.session?.access_token
+      if (!accessToken) throw new Error("질문을 삭제하려면 로그인해 주세요.")
+
       // id는 URL 쿼리문으로 보낸다. 숫자이지만 혹시 모를 문자를 안전하게 인코딩한다.
       const response = await fetch(`/api/questions?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
       })
 
       // 응답이 JSON이 아닐 수도 있어서 안전하게 해석한다.

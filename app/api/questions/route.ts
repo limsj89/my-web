@@ -49,16 +49,60 @@ function readQuestion(body: unknown): string | null {
   return value.trim()
 }
 
+// Authorization: Bearer <access_token> 헤더에서 access_token만 꺼낸다.
+// 형식이 조금이라도 어긋나면 null을 돌려주어 즉시 거를 수 있게 한다.
+function readBearerToken(request: Request): string | null {
+  return request.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1] ?? null
+}
+
+// access_token을 Supabase Auth에 확인시켜 로그인한 사용자의 id를 얻는다.
+// 토큰이 틀리면 null, Auth 서버에 닿지 않는 등 예상치 못한 오류는 예외를 그대로 올려
+// 부르는 쪽에서 401과 500을 나누어 응답하도록 한다.
+async function verifyAccessToken(accessToken: string): Promise<string | null> {
+  const supabase = createUserClient(accessToken)
+  const { data, error } = await supabase.auth.getUser(accessToken)
+  if (error || !data.user) return null
+  return data.user.id
+}
+
+// 로그인 확인 실패(401) 응답. GET과 POST가 같은 형태를 돌려준다.
+function unauthorized(message = "로그인이 필요합니다. 다시 로그인해 주세요."): Response {
+  return Response.json({ success: false, error: message }, { status: 401 })
+}
+
+// 로그아웃 상태에서 목록/삭제 영역에 보여줄 안내 문구
+const LIST_LOGIN_REQUIRED = "저장한 질문을 보려면 로그인해 주세요."
+const DELETE_LOGIN_REQUIRED = "질문을 삭제하려면 로그인해 주세요."
+
 // GET /api/questions
-// 저장된 질문 목록을 최신순으로 돌려준다. Supabase에는 서버만 접속한다.
-export async function GET() {
+// 로그인한 사용자 본인의 질문만 목록으로 돌려준다.
+// 브라우저가 보내는 user_id는 전혀 보지 않고, Authorization 토큰으로 확인한 user.id만 쓴다.
+export async function GET(request: NextRequest) {
+  const accessToken = readBearerToken(request)
+  if (!accessToken) return unauthorized(LIST_LOGIN_REQUIRED)
+
+  let userId: string
   try {
+    const verified = await verifyAccessToken(accessToken)
+    if (verified === null) return unauthorized(LIST_LOGIN_REQUIRED)
+    userId = verified
+  } catch (error) {
+    console.error("질문 목록 확인 중 인증 오류:", error)
+    return Response.json(
+      { success: false, error: "로그인 확인 중 오류가 발생했습니다." },
+      { status: 500 },
+    )
+  }
+
+  try {
+    // Secret key로 조회하지만 .eq("user_id", userId) 조건 덕분에 본인 행만 넘어온다.
     const supabase = createAdminClient()
 
     // id, question, created_at을 조회하고 생성 시간 내림차순(최신이 위)으로 정렬한다.
     const { data, error } = await supabase
       .from("questions")
       .select("id, question, created_at")
+      .eq("user_id", userId)
       .order("created_at", { ascending: false })
 
     if (error) {
@@ -88,22 +132,18 @@ export async function GET() {
 // POST /api/questions
 // 브라우저는 이 주소로 질문을 보내고, Supabase에는 서버만 접속한다.
 export async function POST(request: NextRequest) {
-  const accessToken = request.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1]
-  const unauthorized = () => Response.json(
-    { success: false, error: "로그인이 필요합니다. 다시 로그인해 주세요." },
-    { status: 401 },
-  )
+  const accessToken = readBearerToken(request)
 
   if (!accessToken) return unauthorized()
 
   let userId: string
   try {
-    const supabase = createUserClient(accessToken)
-    // JWT를 단순 해독하거나 body의 user_id를 신뢰하지 않고 Auth 서버에서 확인한다.
-    const { data, error } = await supabase.auth.getUser(accessToken)
-    if (error || !data.user) return unauthorized()
-    userId = data.user.id
-  } catch {
+    // body의 user_id를 신뢰하지 않도록 JWT를 Auth 서버에 확인시킨다.
+    const verified = await verifyAccessToken(accessToken)
+    if (verified === null) return unauthorized()
+    userId = verified
+  } catch (error) {
+    console.error("질문 저장 전 인증 오류:", error)
     return Response.json(
       { success: false, error: "로그인 확인 중 오류가 발생했습니다." },
       { status: 500 },
@@ -182,8 +222,26 @@ export async function POST(request: NextRequest) {
 }
 
 // DELETE /api/questions?id=123
-// 지정한 한 행만 지운다. 지워진 행을 되받아 실제로 삭제됐는지 확인한다.
+// 로그인한 사용자 본인의 행만 지운다(id와 user_id 둘 다 맞아야 한다).
+// 지워진 행을 되받아 실제로 삭제됐는지 확인한다.
 export async function DELETE(request: NextRequest) {
+  const accessToken = readBearerToken(request)
+  if (!accessToken) return unauthorized(DELETE_LOGIN_REQUIRED)
+
+  let userId: string
+  try {
+    // URL의 id를 신뢰하지 않듯, 삭제 대상도 토큰으로 확인한 사용자 범위로만 좁힌다.
+    const verified = await verifyAccessToken(accessToken)
+    if (verified === null) return unauthorized(DELETE_LOGIN_REQUIRED)
+    userId = verified
+  } catch (error) {
+    console.error("질문 삭제 전 인증 오류:", error)
+    return Response.json(
+      { success: false, error: "로그인 확인 중 오류가 발생했습니다." },
+      { status: 500 },
+    )
+  }
+
   // URL 쿼리문(?id=123)에서 id를 꺼낸다.
   // 숫자가 아니거나 0 이하이면 어떤 행도 지우지 않도록 바로 막는다.
   const idText = request.nextUrl.searchParams.get("id")
@@ -205,6 +263,8 @@ export async function DELETE(request: NextRequest) {
       .from("questions")
       .delete()
       .eq("id", id)
+      // 다른 사용자의 질문은 user_id 조건에 맞지 않아 삭제되지 않는다.
+      .eq("user_id", userId)
       .select("id")
 
     if (error) {
