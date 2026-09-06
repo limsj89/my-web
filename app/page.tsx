@@ -1,9 +1,55 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 
 // 화면 위에 보여줄 저장 결과. 아직 결과를 받지 못하면 null이다.
 type SaveStatus = { kind: "success" | "error"; message: string } | null
+
+// Supabase questions 테이블에서 받아오는 질문 한 건
+type SavedQuestion = {
+  id: number
+  question: string
+  created_at: string
+}
+
+// 목록 불러오기에 실패했을 때 보여줄 기본 메시지
+const LIST_LOAD_ERROR = "질문 목록을 불러오지 못했습니다."
+
+// 서버(/api/questions)에서 저장된 질문 목록을 받아온다.
+// 상태를 건드리지 않는 순수한 네트워크 함수이며, 실패하면 예외를 던진다.
+async function fetchSavedQuestions(): Promise<SavedQuestion[]> {
+  const response = await fetch("/api/questions", { cache: "no-store" })
+
+  // 응답이 JSON이 아닐 수도 있어서 안전하게 해석한다.
+  const result = (await response.json().catch(() => null)) as {
+    questions?: SavedQuestion[]
+    error?: string
+  } | null
+
+  if (!response.ok || !Array.isArray(result?.questions)) {
+    throw new Error(result?.error ?? LIST_LOAD_ERROR)
+  }
+
+  return result.questions
+}
+
+// 예외에서 사용자용 메시지 문자열을 꺼낸다.
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : LIST_LOAD_ERROR
+}
+
+// DB가 준 시간 문자열("2026-09-06T15:23:01+00:00")을 보기 좋은 날짜/시간으로 바꾼다.
+function formatCreatedAt(value: string): string {
+  const date = new Date(value)
+
+  // 형식이 이상하면 원본 문자열을 그대로 보여준다.
+  if (Number.isNaN(date.getTime())) return value
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date)
+}
 
 export default function Home() {
   // textarea에 입력한 질문을 담는 상태
@@ -20,6 +66,43 @@ export default function Home() {
 
   // 저장 요청 중에 버튼이 두 번 눌리지 않게 막는 플래그
   const [isSaving, setIsSaving] = useState(false)
+
+  // 서버에서 불러온 저장된 질문 목록.
+  // null은 아직 한 번도 불러오지 못한 상태이고, 이 경우 "불러오는 중"을 보여준다.
+  const [savedQuestions, setSavedQuestions] = useState<SavedQuestion[] | null>(null)
+
+  // 목록 불러오기에 실패했을 때의 오류 메시지
+  const [listError, setListError] = useState<string | null>(null)
+
+  // 저장된 질문 목록을 다시 불러온다.
+  // 저장 성공 직후와 "다시 시도" 버튼에서 함께 사용한다.
+  // useCallback으로 감싸면 함수가 매번 새로 만들어지지 않으므로
+  // useEffect 의존성 배열에 넣어도 무한 반복이 생기지 않는다.
+  const refreshQuestions = useCallback(async () => {
+    try {
+      const items = await fetchSavedQuestions()
+      setSavedQuestions(items)
+      setListError(null)
+    } catch (error) {
+      // 저장 자체는 성공했을 수 있으므로 오류는 목록 영역에만 표시한다.
+      setListError(messageOf(error))
+    }
+  }, [])
+
+  // 페이지가 열리면 한 번 목록을 불러온다.
+  useEffect(() => {
+    async function loadOnMount() {
+      await refreshQuestions()
+    }
+
+    void loadOnMount()
+  }, [refreshQuestions])
+
+  // "다시 시도" 버튼. 오류 문구를 지우고 다시 불러온다.
+  function handleRetryClick() {
+    setListError(null)
+    void refreshQuestions()
+  }
 
   // 질문을 서버(/api/questions)로 보내 저장하고, 결과를 화면에 보여준다.
   async function handleAskClick() {
@@ -51,6 +134,9 @@ export default function Home() {
       // 기존 동작 유지: 답변 영역과 지난 질문 목록에도 남긴다.
       setAnswer(asked)
       setHistory([asked, ...history])
+
+      // 방금 저장한 질문이 목록에 바로 보이도록 목록을 다시 불러온다.
+      await refreshQuestions()
     } catch (error) {
       // 서버가 보내준 오류 메시지를 그대로 보여주고,
       // fetch 자체가 실패한 경우(서버 종료, 네트워크 끊김)는 한국어 안내로 바꾼다.
@@ -157,6 +243,45 @@ export default function Home() {
                 >
                   x
                 </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium">저장된 질문</h2>
+
+        {/*
+          오류 -> 아직 못 불러옴(로딩) -> 목록 없음 -> 목록 순으로 보여준다.
+          목록이 이미 있는 상태의 갱신은 로딩 문구 없이 그대로 갈아끼운다.
+        */}
+        {listError !== null ? (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm text-red-600 dark:text-red-400">{listError}</p>
+            <button
+              type="button"
+              onClick={handleRetryClick}
+              className="rounded-md border border-neutral-300 px-3 py-1 text-sm font-medium hover:bg-neutral-200 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            >
+              다시 시도
+            </button>
+          </div>
+        ) : savedQuestions === null ? (
+          <p className="text-base text-neutral-400">질문 목록을 불러오는 중...</p>
+        ) : savedQuestions.length === 0 ? (
+          <p className="text-base text-neutral-400">저장된 질문이 없습니다.</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {savedQuestions.map((saved) => (
+              <li
+                key={saved.id}
+                className="flex flex-col gap-1 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700"
+              >
+                <p className="break-words text-base">{saved.question}</p>
+                <p className="text-xs text-neutral-500">
+                  {formatCreatedAt(saved.created_at)}
+                </p>
               </li>
             ))}
           </ul>

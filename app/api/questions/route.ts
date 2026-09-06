@@ -30,6 +30,42 @@ function readQuestion(body: unknown): string | null {
   return value.trim()
 }
 
+// GET /api/questions
+// 저장된 질문 목록을 최신순으로 돌려준다. Supabase에는 서버만 접속한다.
+export async function GET() {
+  try {
+    const supabase = createAdminClient()
+
+    // id, question, created_at을 조회하고 생성 시간 내림차순(최신이 위)으로 정렬한다.
+    const { data, error } = await supabase
+      .from("questions")
+      .select("id, question, created_at")
+      .order("created_at", { ascending: false })
+
+    if (error) {
+      // 상세 내용은 서버 로그에만 남기고 사용자에게는 간단한 메시지만 보낸다
+      console.error("Supabase 조회 실패:", error.message)
+      return Response.json(
+        { success: false, error: "질문 목록을 불러오지 못했습니다." },
+        { status: 500 },
+      )
+    }
+
+    // Cache-Control: no-store
+    // 브라우저가 이전 응답을 보관해서 방금 저장한 질문이 안 보이는 일을 막는다.
+    return Response.json(
+      { success: true, questions: data ?? [] },
+      { headers: { "Cache-Control": "no-store" } },
+    )
+  } catch (error) {
+    console.error("질문 목록 조회 중 오류:", error)
+    return Response.json(
+      { success: false, error: "질문 목록을 불러오지 못했습니다." },
+      { status: 500 },
+    )
+  }
+}
+
 // POST /api/questions
 // 브라우저는 이 주소로 질문을 보내고, Supabase에는 서버만 접속한다.
 export async function POST(request: NextRequest) {
