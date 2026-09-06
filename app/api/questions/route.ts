@@ -138,3 +138,59 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+// DELETE /api/questions?id=123
+// 지정한 한 행만 지운다. 지워진 행을 되받아 실제로 삭제됐는지 확인한다.
+export async function DELETE(request: NextRequest) {
+  // URL 쿼리문(?id=123)에서 id를 꺼낸다.
+  // 숫자가 아니거나 0 이하이면 어떤 행도 지우지 않도록 바로 막는다.
+  const idText = request.nextUrl.searchParams.get("id")
+  const id = Number(idText)
+
+  if (idText === null || !Number.isInteger(id) || id < 1) {
+    return Response.json(
+      { success: false, error: "삭제할 질문 id가 올바르지 않습니다." },
+      { status: 400 },
+    )
+  }
+
+  try {
+    const supabase = createAdminClient()
+
+    // .eq("id", id)로 해당 행만 지운다. 조건 없이 delete()를 부르면 전체가 사라진다.
+    // .select("id")를 붙이면 지워진 행이 반환되어 실제로 지워졌는지 확인할 수 있다.
+    const { data, error } = await supabase
+      .from("questions")
+      .delete()
+      .eq("id", id)
+      .select("id")
+
+    if (error) {
+      console.error("Supabase 삭제 실패:", error.message)
+      return Response.json(
+        { success: false, error: "질문 삭제에 실패했습니다." },
+        { status: 500 },
+      )
+    }
+
+    // 지워진 행이 없으면 id가 존재하지 않았다는 뜻이다.
+    if (!data || data.length === 0) {
+      return Response.json(
+        { success: false, error: "삭제할 질문을 찾지 못했습니다." },
+        { status: 404 },
+      )
+    }
+
+    return Response.json({
+      success: true,
+      message: "삭제되었습니다.",
+      id: data[0].id,
+    })
+  } catch (error) {
+    console.error("질문 삭제 중 오류:", error)
+    return Response.json(
+      { success: false, error: "질문 삭제 중 오류가 발생했습니다." },
+      { status: 500 },
+    )
+  }
+}

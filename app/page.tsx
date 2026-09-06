@@ -74,6 +74,13 @@ export default function Home() {
   // 목록 불러오기에 실패했을 때의 오류 메시지
   const [listError, setListError] = useState<string | null>(null)
 
+  // 삭제 요청 중인 질문 id.
+  // 값이 있는 동안에는 모든 삭제 버튼을 비활성화해 중복 요청을 막는다.
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+
+  // 삭제에 실패했을 때의 오류 메시지
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
   // 저장된 질문 목록을 다시 불러온다.
   // 저장 성공 직후와 "다시 시도" 버튼에서 함께 사용한다.
   // useCallback으로 감싸면 함수가 매번 새로 만들어지지 않으므로
@@ -83,6 +90,9 @@ export default function Home() {
       const items = await fetchSavedQuestions()
       setSavedQuestions(items)
       setListError(null)
+
+      // 목록이 방금 서버 상태를 반영했으므로 이전 삭제 오류 메시지는 지운다.
+      setDeleteError(null)
     } catch (error) {
       // 저장 자체는 성공했을 수 있으므로 오류는 목록 영역에만 표시한다.
       setListError(messageOf(error))
@@ -102,6 +112,45 @@ export default function Home() {
   function handleRetryClick() {
     setListError(null)
     void refreshQuestions()
+  }
+
+  // 저장된 질문을 지운다. 확인 -> DELETE -> 목록 다시 불러오기 순서로 진행한다.
+  async function handleSavedQuestionDelete(id: number) {
+    // 브라우저 확인 창. "취소"를 누르면 아무것도 하지 않는다.
+    if (!window.confirm("이 질문을 삭제할까요?")) return
+
+    setDeletingId(id)
+    setDeleteError(null)
+
+    try {
+      // id는 URL 쿼리문으로 보낸다. 숫자이지만 혹시 모를 문자를 안전하게 인코딩한다.
+      const response = await fetch(`/api/questions?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      })
+
+      // 응답이 JSON이 아닐 수도 있어서 안전하게 해석한다.
+      const result = (await response.json().catch(() => null)) as {
+        error?: string
+      } | null
+
+      if (!response.ok) {
+        throw new Error(result?.error ?? "질문 삭제에 실패했습니다.")
+      }
+
+      // 지운 질문이 목록에서 바로 사라지도록 다시 불러온다.
+      await refreshQuestions()
+    } catch (error) {
+      // 서버가 보내준 오류 메시지를 보여주고, fetch 실패는 한국어 안내로 바꾼다.
+      const message =
+        error instanceof TypeError
+          ? "서버와 연결하지 못했습니다. 잠시 후 다시 시도해 주세요."
+          : error instanceof Error
+            ? error.message
+            : "알 수 없는 오류가 발생했습니다."
+      setDeleteError(message)
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   // 질문을 서버(/api/questions)로 보내 저장하고, 결과를 화면에 보여준다.
@@ -252,6 +301,17 @@ export default function Home() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium">저장된 질문</h2>
 
+        {/* 삭제 실패 메시지를 표시하는 영역 */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={`text-sm ${
+            deleteError === null ? "hidden" : "text-red-600 dark:text-red-400"
+          }`}
+        >
+          {deleteError}
+        </p>
+
         {/*
           오류 -> 아직 못 불러옴(로딩) -> 목록 없음 -> 목록 순으로 보여준다.
           목록이 이미 있는 상태의 갱신은 로딩 문구 없이 그대로 갈아끼운다.
@@ -276,12 +336,26 @@ export default function Home() {
             {savedQuestions.map((saved) => (
               <li
                 key={saved.id}
-                className="flex flex-col gap-1 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700"
+                className="flex items-center gap-2 rounded-lg border border-neutral-300 p-2 dark:border-neutral-700"
               >
-                <p className="break-words text-base">{saved.question}</p>
-                <p className="text-xs text-neutral-500">
-                  {formatCreatedAt(saved.created_at)}
-                </p>
+                {/* 왼쪽: 질문 내용과 생성 시간 */}
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <p className="break-words text-base">{saved.question}</p>
+                  <p className="text-xs text-neutral-500">
+                    {formatCreatedAt(saved.created_at)}
+                  </p>
+                </div>
+
+                {/* 오른쪽: 삭제 버튼. 삭제 요청이 하나라도 진행 중이면 모두 비활성화 */}
+                <button
+                  type="button"
+                  onClick={() => void handleSavedQuestionDelete(saved.id)}
+                  disabled={deletingId !== null}
+                  aria-label={`${saved.question} 삭제`}
+                  className="shrink-0 self-center rounded-md px-2.5 py-1 text-base font-medium text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                >
+                  삭제
+                </button>
               </li>
             ))}
           </ul>
