@@ -19,6 +19,25 @@ function createAdminClient(): SupabaseClient {
   return createClient(supabaseUrl, supabaseSecretKey)
 }
 
+// POST 인증 전용: Publishable key와 사용자 JWT로 실제 사용자를 확인한다.
+function createUserClient(accessToken: string): SupabaseClient {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+
+  if (!supabaseUrl || !publishableKey) {
+    throw new Error("Supabase 공개 환경변수가 설정되지 않았습니다.")
+  }
+
+  return createClient(supabaseUrl, publishableKey, {
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  })
+}
+
 // 요청 본문(아무 모양일 수 있다)에서 question 문자열만 안전하게 꺼낸다.
 // question이 없거나 문자열이 아니면 null을 돌려준다.
 function readQuestion(body: unknown): string | null {
@@ -69,6 +88,28 @@ export async function GET() {
 // POST /api/questions
 // 브라우저는 이 주소로 질문을 보내고, Supabase에는 서버만 접속한다.
 export async function POST(request: NextRequest) {
+  const accessToken = request.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1]
+  const unauthorized = () => Response.json(
+    { success: false, error: "로그인이 필요합니다. 다시 로그인해 주세요." },
+    { status: 401 },
+  )
+
+  if (!accessToken) return unauthorized()
+
+  let userId: string
+  try {
+    const supabase = createUserClient(accessToken)
+    // JWT를 단순 해독하거나 body의 user_id를 신뢰하지 않고 Auth 서버에서 확인한다.
+    const { data, error } = await supabase.auth.getUser(accessToken)
+    if (error || !data.user) return unauthorized()
+    userId = data.user.id
+  } catch {
+    return Response.json(
+      { success: false, error: "로그인 확인 중 오류가 발생했습니다." },
+      { status: 500 },
+    )
+  }
+
   // 1) 요청 본문(JSON) 해석
   let body: unknown
   try {
@@ -104,13 +145,14 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // 3) Supabase에 저장. id와 created_at은 DB 자동값을 쓰므로 question만 보낸다.
+  // 3) 검증된 사용자 ID와 질문만 저장한다. id와 created_at은 DB 자동값을 쓴다.
   try {
+    // 현재 RLS 정책을 유지하기 위해 저장은 기존 서버 전용 권한으로 처리한다.
+    // 사용자 INSERT/SELECT 정책을 준비한 뒤 createUserClient(accessToken)로 전환할 수 있다.
     const supabase = createAdminClient()
-
     const { data, error } = await supabase
       .from("questions")
-      .insert({ question })
+      .insert({ question, user_id: userId })
       .select("id, created_at")
       .single()
 

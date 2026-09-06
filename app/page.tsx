@@ -1,7 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import AuthPanel from "@/components/auth-panel"
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser"
 
 // 화면 위에 보여줄 저장 결과. 아직 결과를 받지 못하면 null이다.
 type SaveStatus = { kind: "success" | "error"; message: string } | null
@@ -15,6 +16,12 @@ type SavedQuestion = {
 
 // 목록 불러오기에 실패했을 때 보여줄 기본 메시지
 const LIST_LOAD_ERROR = "질문 목록을 불러오지 못했습니다."
+
+// 서버와 hydration 첫 렌더링은 false, hydration 이후 브라우저에서는 true.
+// 구독할 외부 데이터는 없으며 브라우저 저장소나 세션을 읽지 않는다.
+const subscribeToMount = () => () => {}
+const getMountedSnapshot = () => true
+const getServerMountedSnapshot = () => false
 
 // 서버(/api/questions)에서 저장된 질문 목록을 받아온다.
 // 상태를 건드리지 않는 순수한 네트워크 함수이며, 실패하면 예외를 던진다.
@@ -53,6 +60,12 @@ function formatCreatedAt(value: string): string {
 }
 
 export default function Home() {
+  const mounted = useSyncExternalStore(
+    subscribeToMount,
+    getMountedSnapshot,
+    getServerMountedSnapshot,
+  )
+
   // textarea에 입력한 질문을 담는 상태
   const [question, setQuestion] = useState("")
 
@@ -154,16 +167,24 @@ export default function Home() {
   // 질문을 서버(/api/questions)로 보내 저장하고, 결과를 화면에 보여준다.
   async function handleAskClick() {
     const asked = question.trim()
-    if (asked === "") return
+    if (!mounted || isSaving || asked === "") return
 
     setIsSaving(true)
     setStatus(null)
 
     try {
-      // Secret Key는 쓰지 않는다. 서버(Route Handler)가 대신 저장한다.
+      const { data, error } = await getSupabaseBrowserClient().auth.getSession()
+      if (error || !data.session?.access_token) {
+        throw new Error("질문을 저장하려면 로그인해 주세요.")
+      }
+
+      // 사용자 ID는 보내지 않고, 서버에서 검증할 세션 토큰만 전달한다.
       const response = await fetch("/api/questions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${data.session.access_token}`,
+        },
         body: JSON.stringify({ question: asked }),
       })
 
@@ -218,14 +239,24 @@ export default function Home() {
           className="w-full resize-y rounded-lg border border-neutral-300 bg-background p-3 text-base text-foreground placeholder:text-neutral-400 focus:border-neutral-900 focus:outline-none dark:border-neutral-700 dark:focus:border-neutral-100"
         />
 
-        <button
-          type="button"
-          onClick={handleAskClick}
-          disabled={question.trim() === "" || isSaving}
-          className="self-start rounded-lg bg-neutral-900 px-5 py-2.5 text-base font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
-        >
-          {isSaving ? "저장 중..." : "질문하기"}
-        </button>
+        {/* hydration 전 disabled 속성 변경의 영향을 피하도록 실제 버튼은 마운트 후 생성한다. */}
+        {mounted ? (
+          <button
+            type="button"
+            onClick={handleAskClick}
+            disabled={question.trim() === "" || isSaving}
+            className="self-start rounded-lg bg-neutral-900 px-5 py-2.5 text-base font-medium text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {isSaving ? "저장 중..." : "질문하기"}
+          </button>
+        ) : (
+          <span
+            aria-hidden="true"
+            className="self-start cursor-not-allowed rounded-lg bg-neutral-900 px-5 py-2.5 text-base font-medium text-white opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            질문하기
+          </span>
+        )}
 
         {/* 저장 결과 메시지를 표시하는 영역 */}
         <p
